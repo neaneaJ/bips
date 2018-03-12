@@ -1,0 +1,86 @@
+<pre>
+BIP: XXXX
+Layer: Consensus (soft fork)
+Title: The Great Consensus Cleanup
+Author: Matt Corallo
+Status: Draft
+Type: Standards Track
+Created: 2019-01-28
+License: PD
+</pre>
+
+==Abstract==
+
+This BIP defines a set of consensus changes which reduce the complexity of Bitcoin implementations and improve worst-case validation times, fixing a number of long-standing vulnerabilities.
+
+==Motivation==
+
+BIP 143 significantly improved certain aspects of Bitcoin's consensus rules, key to this being changes to the format of the data which is hashed and signed in CHECKSIG operations during script execution. However, several improvements were left for later forks to avoid bloating the original activation with unrelated changes. This BIP seeks to make some of these changes as well as a few other simplifications. Specifically, this BIP proposes the following changes:
+
+* Worst-case validation time for non-BIP 143 transactions has long been considered a significant vulnerability. To address this, both OP_CODESEPARATOR in non-BIP 143 scripts and FindAndDelete fail script validation, among other cleanups. This drastically reduces worst-case validation time for non-BIP 143 transactions by enabling Signature Hash caching on a per-input basis. While validation time of large, simple non-BIP 143 transactions can still be excessively high on their own, removing these multipliers goes a long way towards resolving the issue.
+
+* By further restricting nTime fields on difficulty adjustment blocks, we propose fixing the long-standing "timewarp" inflation vulnerability in Bitcoin's difficulty adjustment without risking existing mining hardware becoming unusable. This limits the worst-case difficulty adjustment target in case of attack from the current exponential growth, to once every roughly 600 seconds. Note that no change in default behavior is proposed, keeping the existing target of one block every ~600.6 seconds[1] in the common case (ie we limit the attack scenario to about a 0.1% inflation rate, much smaller than the historical inflation rate due to rapid hashrate growth).
+
+* Several vulnerabilities where Bitcoin clients needed to check for specific cases of malleation in the merkle tree construction are resolved by making certain transaction sizes invalid.
+
+==Specification==
+
+Upon activation, the following rules will be enforced on all new blocks:
+
+* scriptSigs which contain non-push opcodes fail the script validation. Push opcodes are OP_0 - OP_1NEGATE and OP_1 - OP_16. Note that this implies any opcodes in scriptSigs greater than 0x60 will fail script validation, in addition to OP_RESERVED (0x50, which already fails script execution in executed branches, though all branches are now guaranteed to execute).
+
+* OP_CODESEPARATOR in non-BIP 143 scripts fails the script validation. This includes OP_CODESEPARATORs in unexecuted branches of if statements, similar to other disabled opcodes, but unlike OP_RETURN.
+
+* When validating signatures in non-BIP 143 scripts, if the scriptPubKey being executed contains, pushed as a single element using minimal PUSHDATA, a signature stack element being validated, the script fails validation. For the avoidance of doubt, any FindAndDelete matches result in script execution failure.
+
+* If the sighash type byte (ie last byte in a signature being evaluated during the execution of OP_CHECKSIG[VERIFY] or OP_CHECKMULTISIG[VERIFY]) is anything other than 1, 2, 3, 0x81, 0x82, or 0x83, the script execution fails. This does not apply to 0-length signature stack elements.
+
+* Transactions smaller than 65 bytes when serialized without witness data are invalid.
+
+* The nTime field of each block whose height, mod 2016, is 0 must be greater than or equal to the nTime field of the immediately prior block minus 600. For the avoidance of doubt, such blocks must still comply with existing Median-Time-Past nTime restrictions.
+
+==Deployment==
+
+This BIP will be deployed by "version bits" BIP9 with the name "cleanups" and using bit (0-indexed) 3.
+
+For Bitcoin mainnet, the BIP9 starttime will be midnight August 1st, 2019 UTC (Epoch timestamp 1564617600) and BIP9 timeout will be midnight August 1st, 2020 UTC (Epoch timestamp 1596240000).
+
+For Bitcoin testnet, the BIP9 starttime will be midnight June 1st, 2019 UTC (Epoch timestamp 1559347200) and BIP9 timeout will be midnight June 1st, 2020 UTC (Epoch timestamp 1590969600).
+
+==Discussion==
+
+* There are very few known uses for OP_CODESEPARATOR and none for FindAndDelete. None of these uses enable new functionality, and any efficiency gains are better made by switching to BIP 141. Further, there is no known use of either on the chain today, and both have been non-standard in Bitcoin Core since version 0.16.1, making them much more difficult to have mined. Both changes, together, allow for signature hash caching within each input script in a non-BIP 143 transaction today. Note that due to their non-standardness, miners using Bitcoin Core version 0.16.1 or later will not mine blocks which violate these rules today.
+* Reducing valid scriptSigs to the minimal set of operations which can generate any stack state removes the requirement that scriptCodes need to be generated for scriptSig execution, reducing the possible set of scriptCodes which must be cached per input by 2x. Because any stack state can be created using only push opcodes, this does not reduce spendability except for pessimal scriptPubKeys which require a significant number of identical stack elements (ie created using OP_DUP). Note that such transactions have been non-standard in Bitcoin Core since before git history (SVN 197) and thus miners running Bitcoin Core will not mine such transactions today.
+* Further, disabling non-canonical sighash types allows caching of the sighash themselves instead of midstates (as the sighash type byte is included in the sighash itself). Avoiding applying this rule to 0-length signatures avoids breaking deliberate OP_CHECKSIG failures while still avoiding having to ever calculate such sighashes. Such sighashes have been non-standard and thus miners using Bitcoin Core version 0.8 or higher will not mine blocks containing such transactions today.
+<br/>
+* While there are no known attempts to exploit the "timewarp" vulnerability on Bitcoin's mainnet today, and the authors do not believe it is likely to occur in the immediate future, removing the possibility has long been on various wishlists and greatly simplifies potential attack analysis.
+** Sadly, some deployed mining hardware relies on the ability to roll nTime forward by up to 600 seconds[3]. Thus, only requiring that the nTime field move forward during difficulty adjustment would allow a malicious miner to prevent some competitors from mining the next block by setting their timestamp to two hours in the future. Thus, we allow nTime to go backwards by 600 seconds, ensuring that even a block with a timestamp two hours in the future allows for 600 seconds of nTime rolling on the next block.
+** Note that miners today only enforce increasing timestamps against the median-timestamp-of-last-11-blocks, so miners who do not upgrade may mine a block which violates this rule at the beginning of a difficulty window if the last block in a difficulty window has a timestamp in the future. Thus, it is strongly recommended that SPV clients enforce the new nTime rules to avoid following any potential forks which occur.
+<br/>
+* The issues involved in having leaf nodes in the transaction merkle tree which can be confused for inner nodes are well documented. [4][5][6] While there are workarounds for the pitfalls, there are many SPV-proof-validators which do not implement them. Further, the limited use-cases for very small transactions does not suffice as reason to force the added complexity onto clients. Note that any transactions smaller than 83 bytes have been considered non-standard since Bitcoin Core version 0.17.0, so miners will not mine blocks which validate this rule by default.
+<br/>
+* There are several early-stage proposals which may affect the execution of scripts, including proposals such as Schnorr signatures, Taproot, Graftroot, and MAST. These proposals are not expected to have any interaction with the changes in this BIP, as they are likely to only apply to SegWit scripts, which are not covered by any of the new rules except for the sighash type byte rule. Thus, the sighash type byte rule defined above only applies to *current* signature-checking opcodes, as any new signature-checking is likely to be implemented via the introduction of new opcodes.
+<br/>
+* In spite of some suggestion that other activation methods be used, BIP 9 is proposed as ensuring miners have upgraded to enforce new rules is an important part of minimizing disruption. While previous BIP 9 soft-forks have resulted in political contention, this comparatively-unimportant soft-fork provides a good opportunity to attempt to return to utilizing BIP 9 to ensure miner upgrade prior to activation, which the authors believe is a critical goal. However, if there is broad agreement to activate these rules when the BIP 9 expiry time is reached, and miners have not yet signaled sufficient level of readiness, a later flag-day activation may be merited. For this reason, implementations may wish to provide a compatibility option which allows flag-day enforcement of these rules without an update.
+
+==Reference Implementation==
+
+[https://github.com/bitcoin/bitcoin/pull/15482 Bitcoin Core Pull #15482]
+
+==References==
+
+[1] The difficulty adjustment algorithm in Bitcoin multiplies the previous difficulty by (2016 / time taken to mine the last 2015 blocks). Intuitively[2], this implies the actual Inter-Block-Time (IBT) target is 2016/2015*600, or about 600.3 seconds. However, the expected value of the inverse of an Erlang distribution (which the above is effectively sampling from) is actually 1/(N-1), not 1/N. Thus, the above expression actually targets an IBT of 2016/2014*600, or about 600.6 seconds, ie E(2016*600/X) = 1 where X~ErlangDistribution(k=2015, λ=1/IBT) when IBT is 2016/2014*600. This is equivalent to 600*E(2016*600/X) where X~ErlangDistribution(k=2015, λ=1/600). In the case of a miner deliberately reducing timestamps by 600 seconds on the difficulty-retargeting block, we are effectively changing the difficulty multiplier to (2016 / (time taken to mine the last 2016 blocks + 600)), or 600*E(2016*600/(X + 600)) where X~Erlang Distribution(k=2016, λ=1/600), which is effectively targeting an inter-block time of ~599.9999 seconds.
+
+[2] See [https://twitter.com/pwuille/status/1098288749098795008] for most peoples' intuition. For more info see Pieter's writeup at [https://gist.github.com/sipa/1a70884abe6d0a7cddc340c99f741a41]
+
+[3] While no official stratum specification exists, the btc.com pool server (one of the most popular pool servers today) rejects shares with timestamps more than 600 seconds in the future at [https://github.com/btccom/btcpool/blob/e7c536834fd6785af7d7d68ff29111ed81209cdf/src/bitcoin/StratumServerBitcoin.cc#L384]. While there are few resources describing hardware operation today, timestamp rolling can be observed on the chain (in some rare cases) as block timestamps go backwards when a miner rolled one block nTime forward and the next does not, but only incredibly rarely more than 600 seconds.
+
+[4] [https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2018-June/016091.html]
+
+[5] [https://lists.linuxfoundation.org/pipermail/bitcoin-dev/attachments/20180609/9f4f5b1f/attachment-0001.pdf]
+
+[6] [https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2019-February/016697.html]
+
+==Acknowledgments==
+
+Thanks (in alphabetical order) to Suhas Daftuar, James Hilliard, Johnson Lau, Steve Lee, Greg Maxwell, John Newberry, and Pieter Wuille for their helpful feedback at various stages as well as the entire Bitcoin Protocol Development Community.

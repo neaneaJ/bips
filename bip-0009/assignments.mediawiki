@@ -34,4 +34,14 @@ State can be defined, active, failed. Dates are in UTC.
 | 2017-05-01 00:00:00
 | active since #834624
 | [[/bip-0141.mediawiki|141]], [[/bip-0143.mediawiki|143]], [[/bip-0147.mediawiki|147]]
+|-
+| cleanups
+| 3
+| 2019-08-01 00:00:00
+| 2020-08-01 00:00:00
+| defined
+| 2019-08-01 00:00:00
+| 2020-08-01 00:00:00
+| defined
+| [[/bip-XXXX.mediawiki|XXX]]
 |}
